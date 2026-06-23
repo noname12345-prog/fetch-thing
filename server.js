@@ -34,24 +34,38 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
         const avatarRes = await fetch(`https://avatar.roblox.com/v1/users/${req.params.userId}/avatar`)
         const avatarData = await avatarRes.json()
         const assets = avatarData.assets || []
-        console.log(`[AvatarCost] ${req.params.userId} — ${assets.length} assets on avatar`)
         if (!assets.length) return res.json({ robuxSpent: 0 })
 
-        let total = 0
-        await Promise.all(assets.map(async (asset) => {
-            try {
-                const r = await fetch(`https://economy.roblox.com/v2/assets/${asset.id}/details`)
-                const data = await r.json()
-                console.log(`[AvatarCost] Asset ${asset.id} — PriceInRobux:${data.PriceInRobux} IsForSale:${data.IsForSale}`)
-                if (data.PriceInRobux && data.PriceInRobux > 0) {
-                    total += data.PriceInRobux
-                }
-            } catch (e) {
-                console.warn(`[AvatarCost] Failed to fetch asset ${asset.id}:`, e.message)
-            }
-        }))
+        const rolimonsRes = await fetch("https://www.rolimons.com/itemapi/itemdetails")
+        const rolimonsData = await rolimonsRes.json()
+        const items = rolimonsData.items || {}
 
-        console.log(`[AvatarCost] Total for ${req.params.userId}: ${total}`)
+        // Rolimons item format: [name, acronym, rap, value, default_value, demand, trend, projected, hyped, rare]
+        // index 2 = RAP (Recent Average Price)
+
+        let total = 0
+        for (const asset of assets) {
+            const id = String(asset.id)
+            if (items[id]) {
+                const rap = items[id][2]
+                if (rap && rap > 0) {
+                    console.log(`[AvatarCost] Asset ${id} RAP: ${rap}`)
+                    total += rap
+                }
+            } else {
+                // fallback for non-limited UGC: try economy endpoint
+                try {
+                    const r = await fetch(`https://economy.roblox.com/v2/assets/${asset.id}/details`)
+                    const data = await r.json()
+                    if (data.PriceInRobux && data.PriceInRobux > 0) {
+                        console.log(`[AvatarCost] Asset ${id} economy price: ${data.PriceInRobux}`)
+                        total += data.PriceInRobux
+                    }
+                } catch (_) {}
+            }
+        }
+
+        console.log(`[AvatarCost] Total RAP for ${req.params.userId}: ${total}`)
         res.json({ robuxSpent: total })
     } catch (e) {
         console.error(`[AvatarCost] Error:`, e.message)
