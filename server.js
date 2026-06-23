@@ -108,18 +108,34 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
 app.get("/check/badges/:userId", auth, async (req, res) => {
     try {
         const pages = []
-        let cursor = ""
-        do {
-            const r = await fetch(
-                `https://badges.roproxy.com/v1/users/${req.params.userId}/badges?limit=100&sortOrder=Desc${cursor ? `&cursor=${cursor}` : ""}`
-            )
-            const data = await r.json()
-            pages.push(data.data || [])
-            cursor = data.nextPageCursor || ""
-        } while (cursor)
+        let cursor = null
+        let pageCount = 0
 
+        do {
+            const url = new URL(`https://badges.roproxy.com/v1/users/${req.params.userId}/badges`)
+            url.searchParams.set("limit", "100")
+            url.searchParams.set("sortOrder", "Asc")
+            if (cursor) url.searchParams.set("cursor", cursor)
+
+            const r = await fetch(url.toString())
+            const data = await r.json()
+
+            console.log(`[Badges] Page ${pageCount + 1} — items: ${(data.data || []).length} nextCursor: ${data.nextPageCursor || "none"}`)
+
+            if (!data.data) {
+                console.warn(`[Badges] No data field in response:`, JSON.stringify(data))
+                break
+            }
+
+            pages.push(data.data)
+            pageCount++
+            cursor = data.nextPageCursor || null
+        } while (cursor && pageCount < 200)
+
+        console.log(`[Badges] Total pages for ${req.params.userId}: ${pageCount}`)
         res.json({ pages })
     } catch (e) {
+        console.error(`[Badges] Error:`, e.message)
         res.status(500).json({ error: e.message })
     }
 })
