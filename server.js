@@ -142,7 +142,7 @@ app.get("/check/badges/:userId", auth, async (req, res) => {
         do {
             const url = new URL(`https://apis.roblox.com/cloud/v2/users/${req.params.userId}/inventory-items`)
             url.searchParams.set("filter", "badges=true")
-            url.searchParams.set("maxPageSize", "100")
+            url.searchParams.set("maxPageSize", "25")
             if (cursor) url.searchParams.set("pageToken", cursor)
 
             const r = await fetch(url.toString(), {
