@@ -38,34 +38,73 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
 
         const rolimonsRes = await fetch("https://www.rolimons.com/itemapi/itemdetails")
         const rolimonsData = await rolimonsRes.json()
-        const items = rolimonsData.items || {}
-
-        // Rolimons item format: [name, acronym, rap, value, default_value, demand, trend, projected, hyped, rare]
-        // index 2 = RAP (Recent Average Price)
+        const rolimons = rolimonsData.items || {}
 
         let total = 0
-        for (const asset of assets) {
-            const id = String(asset.id)
-            if (items[id]) {
-                const rap = items[id][2]
-                if (rap && rap > 0) {
-                    console.log(`[AvatarCost] Asset ${id} RAP: ${rap}`)
-                    total += rap
-                }
-            } else {
-                // fallback for non-limited UGC: try economy endpoint
-                try {
-                    const r = await fetch(`https://economy.roblox.com/v2/assets/${asset.id}/details`)
-                    const data = await r.json()
-                    if (data.PriceInRobux && data.PriceInRobux > 0) {
-                        console.log(`[AvatarCost] Asset ${id} economy price: ${data.PriceInRobux}`)
-                        total += data.PriceInRobux
-                    }
-                } catch (_) {}
-            }
-        }
+        const countedBundles = new Set() // avoid double-counting bundle parts
 
-        console.log(`[AvatarCost] Total RAP for ${req.params.userId}: ${total}`)
+        await Promise.all(assets.map(async (asset) => {
+            const id = String(asset.id)
+            try {
+                // 1. Rolimons (limiteds)
+                if (rolimons[id] && rolimons[id][2] > 0) {
+                    console.log(`[AvatarCost] ${id} Rolimons RAP: ${rolimons[id][2]}`)
+                    total += rolimons[id][2]
+                    return
+                }
+
+                // 2. Check if this asset belongs to a bundle (catches Korblox, Headless etc.)
+                const bundleRes = await fetch(`https://catalog.roblox.com/v1/assets/${asset.id}/bundles`)
+                const bundleData = await bundleRes.json()
+                if (bundleData.data && bundleData.data.length > 0) {
+                    for (const bundle of bundleData.data) {
+                        if (countedBundles.has(bundle.id)) continue
+                        countedBundles.add(bundle.id)
+
+                        // Get bundle price
+                        const bRes = await fetch(`https://catalog.roblox.com/v1/bundles/${bundle.id}/details`)
+                        const bData = await bRes.json()
+                        const price = bData.product?.priceInRobux ?? 0
+                        console.log(`[AvatarCost] ${id} is part of bundle "${bData.name}" price: ${price}`)
+                        total += price
+                    }
+                    return
+                }
+
+                // 3. Resale/RAP
+                const r = await fetch(`https://marketplace.roblox.com/v1/assets/${asset.id}/resale-data`)
+                const data = await r.json()
+                if (data.recentAveragePrice && data.recentAveragePrice > 0) {
+                    console.log(`[AvatarCost] ${id} resale RAP: ${data.recentAveragePrice}`)
+                    total += data.recentAveragePrice
+                    return
+                }
+
+                // 4. Economy endpoint
+                const r2 = await fetch(`https://economy.roblox.com/v2/assets/${asset.id}/details`)
+                const data2 = await r2.json()
+                if (data2.PriceInRobux && data2.PriceInRobux > 0) {
+                    console.log(`[AvatarCost] ${id} economy price: ${data2.PriceInRobux}`)
+                    total += data2.PriceInRobux
+                    return
+                }
+
+                // 5. Catalog v1 GET
+                const r3 = await fetch(`https://catalog.roblox.com/v1/assets/${asset.id}/details`)
+                const data3 = await r3.json()
+                if (data3.price && data3.price > 0) {
+                    console.log(`[AvatarCost] ${id} catalog price: ${data3.price}`)
+                    total += data3.price
+                    return
+                }
+
+                console.log(`[AvatarCost] ${id} — no price found`)
+            } catch (e) {
+                console.warn(`[AvatarCost] ${id} error:`, e.message)
+            }
+        }))
+
+        console.log(`[AvatarCost] Total for ${req.params.userId}: ${total}`)
         res.json({ robuxSpent: total })
     } catch (e) {
         console.error(`[AvatarCost] Error:`, e.message)
