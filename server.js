@@ -37,27 +37,19 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
         console.log(`[AvatarCost] ${req.params.userId} — ${assets.length} assets on avatar`)
         if (!assets.length) return res.json({ robuxSpent: 0 })
 
-        const ids = assets.map(a => ({ id: a.id, itemType: "Asset" }))
-        console.log(`[AvatarCost] Sending to catalog:`, JSON.stringify(ids))
-
-        const catalogRes = await fetch("https://catalog.roblox.com/v1/catalog/items/details", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ items: ids })
-        })
-        const catalogData = await catalogRes.json()
-        console.log(`[AvatarCost] Catalog response:`, JSON.stringify(catalogData))
-
         let total = 0
-        for (const item of catalogData.data || []) {
-            const price =
-                item.price ??
-                item.lowestPrice ??
-                item.collectibleLowestResalePrice ??
-                0
-            console.log(`[AvatarCost] Item ${item.id} — price:${item.price} lowestPrice:${item.lowestPrice} resale:${item.collectibleLowestResalePrice} → using ${price}`)
-            total += price
-        }
+        await Promise.all(assets.map(async (asset) => {
+            try {
+                const r = await fetch(`https://economy.roblox.com/v2/assets/${asset.id}/details`)
+                const data = await r.json()
+                console.log(`[AvatarCost] Asset ${asset.id} — PriceInRobux:${data.PriceInRobux} IsForSale:${data.IsForSale}`)
+                if (data.PriceInRobux && data.PriceInRobux > 0) {
+                    total += data.PriceInRobux
+                }
+            } catch (e) {
+                console.warn(`[AvatarCost] Failed to fetch asset ${asset.id}:`, e.message)
+            }
+        }))
 
         console.log(`[AvatarCost] Total for ${req.params.userId}: ${total}`)
         res.json({ robuxSpent: total })
