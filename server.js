@@ -1,19 +1,14 @@
-// server.js
 import express from "express"
 const app = express()
 app.use(express.json())
 
-const SECRET = process.env.SECRET_KEY // set this in Koyeb env vars
+const SECRET = process.env.SECRET_KEY
 
-// Auth middleware — stops randos from hitting your endpoints
 function auth(req, res, next) {
-    if (req.headers["x-secret"] !== SECRET) {
-        return res.status(403).json({ error: "Forbidden" })
-    }
+    if (req.headers["x-secret"] !== SECRET) return res.status(403).json({ error: "Forbidden" })
     next()
 }
 
-// ── Inventory visibility ──────────────────────────────────
 app.get("/check/inventory/:userId", auth, async (req, res) => {
     try {
         const r = await fetch(`https://inventory.roblox.com/v1/users/${req.params.userId}/can-view-inventory`)
@@ -24,16 +19,25 @@ app.get("/check/inventory/:userId", auth, async (req, res) => {
     }
 })
 
-// ── Avatar Robux cost ─────────────────────────────────────
+app.get("/check/friends/:userId", auth, async (req, res) => {
+    try {
+        const r = await fetch(`https://friends.roblox.com/v1/users/${req.params.userId}/friends/count`)
+        const data = await r.json()
+        res.json({ count: data.count })
+    } catch (e) {
+        res.status(500).json({ error: e.message })
+    }
+})
+
 app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
     try {
-        // Step 1: fetch avatar assets
         const avatarRes = await fetch(`https://avatar.roblox.com/v1/users/${req.params.userId}/avatar`)
         const avatarData = await avatarRes.json()
-        const ids = (avatarData.assets || []).map(a => ({ id: a.id, itemType: "Asset" }))
-        if (!ids.length) return res.json({ robuxSpent: 0 })
+        const assets = avatarData.assets || []
+        if (!assets.length) return res.json({ robuxSpent: 0 })
 
-        // Step 2: POST to catalog for prices
+        const ids = assets.map(a => ({ id: a.id, itemType: "Asset" }))
+
         const catalogRes = await fetch("https://catalog.roblox.com/v1/catalog/items/details", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -43,7 +47,13 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
 
         let total = 0
         for (const item of catalogData.data || []) {
-            if (item.price) total += item.price
+            // check all price fields — limited items have null price but have resale/lowest price
+            const price =
+                item.price ??
+                item.lowestPrice ??
+                item.collectibleLowestResalePrice ??
+                0
+            total += price
         }
         res.json({ robuxSpent: total })
     } catch (e) {
@@ -51,12 +61,20 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
     }
 })
 
-// ── Friend count ──────────────────────────────────────────
-app.get("/check/friends/:userId", auth, async (req, res) => {
+app.get("/check/badges/:userId", auth, async (req, res) => {
     try {
-        const r = await fetch(`https://friends.roblox.com/v1/users/${req.params.userId}/friends/count`)
-        const data = await r.json()
-        res.json({ count: data.count })
+        const pages = []
+        let cursor = ""
+        do {
+            const r = await fetch(
+                `https://badges.roblox.com/v1/users/${req.params.userId}/badges?limit=100&sortOrder=Desc${cursor ? `&cursor=${cursor}` : ""}`
+            )
+            const data = await r.json()
+            pages.push(data.data || [])
+            cursor = data.nextPageCursor || ""
+        } while (cursor)
+
+        res.json({ pages })
     } catch (e) {
         res.status(500).json({ error: e.message })
     }
