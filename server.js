@@ -17,6 +17,26 @@ function robloxHeaders() {
     }
 }
 
+// Known bundle IDs
+const KORBLOX_BUNDLE_ID = 94
+const HEADLESS_BUNDLE_ID = 520
+const KORBLOX_PRICE = 17000
+const HEADLESS_PRICE = 31000
+
+async function fetchWithFallback(urlList, headers) {
+    for (const url of urlList) {
+        try {
+            const r = await fetch(url, { headers })
+            if (!r.ok) continue
+            const data = await r.json()
+            return data
+        } catch {
+            continue
+        }
+    }
+    return null
+}
+
 app.get("/check/inventory/:userId", auth, async (req, res) => {
     try {
         const r = await fetch(`https://inventory.roproxy.com/v1/users/${req.params.userId}/can-view-inventory`, {
@@ -47,10 +67,13 @@ app.get("/check/friends/:userId", auth, async (req, res) => {
 
 app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
     try {
-        const avatarRes = await fetch(`https://avatar.roproxy.com/v1/users/${req.params.userId}/avatar`, {
-            headers: robloxHeaders()
-        })
-        const avatarData = await avatarRes.json()
+        const avatarData = await fetchWithFallback([
+            `https://avatar.roproxy.com/v1/users/${req.params.userId}/avatar`,
+            `https://avatar.roblox.com/v1/users/${req.params.userId}/avatar`
+        ], robloxHeaders())
+
+        if (!avatarData) return res.status(500).json({ error: "Failed to fetch avatar" })
+
         const assets = avatarData.assets || []
         if (!assets.length) return res.json({ robuxSpent: 0 })
 
@@ -64,58 +87,87 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
         await Promise.all(assets.map(async (asset) => {
             const id = String(asset.id)
             try {
+                // Rolimons RAP check first
                 if (rolimons[id] && rolimons[id][2] > 0) {
                     console.log(`[AvatarCost] ${id} Rolimons RAP: ${rolimons[id][2]}`)
                     total += rolimons[id][2]
                     return
                 }
 
-                const bundleRes = await fetch(`https://catalog.roproxy.com/v1/assets/${asset.id}/bundles`, {
-                    headers: robloxHeaders()
-                })
-                const bundleData = await bundleRes.json()
-                if (bundleData.data && bundleData.data.length > 0) {
+                // Check which bundles this asset belongs to
+                const bundleData = await fetchWithFallback([
+                    `https://catalog.roproxy.com/v1/assets/${asset.id}/bundles`,
+                    `https://catalog.roblox.com/v1/assets/${asset.id}/bundles`
+                ], robloxHeaders())
+
+                if (bundleData?.data?.length > 0) {
                     for (const bundle of bundleData.data) {
                         if (countedBundles.has(bundle.id)) continue
                         countedBundles.add(bundle.id)
-                        const bRes = await fetch(`https://catalog.roproxy.com/v1/bundles/${bundle.id}/details`, {
-                            headers: robloxHeaders()
-                        })
-                        const bData = await bRes.json()
-                        const price = bData.product?.priceInRobux ?? 0
-                        console.log(`[AvatarCost] ${id} bundle "${bData.name}" price: ${price}`)
+
+                        // Hardcoded Korblox / Headless
+                        if (bundle.id === KORBLOX_BUNDLE_ID) {
+                            console.log(`[AvatarCost] ${id} — Korblox bundle detected, adding ${KORBLOX_PRICE}`)
+                            total += KORBLOX_PRICE
+                            continue
+                        }
+                        if (bundle.id === HEADLESS_BUNDLE_ID) {
+                            console.log(`[AvatarCost] ${id} — Headless bundle detected, adding ${HEADLESS_PRICE}`)
+                            total += HEADLESS_PRICE
+                            continue
+                        }
+
+                        const bData = await fetchWithFallback([
+                            `https://catalog.roproxy.com/v1/bundles/${bundle.id}/details`,
+                            `https://catalog.roblox.com/v1/bundles/${bundle.id}/details`
+                        ], robloxHeaders())
+
+                        if (!bData?.product) {
+                            console.log(`[AvatarCost] ${id} bundle ${bundle.id} — no product data`)
+                            continue
+                        }
+
+                        const price = bData.product.priceInRobux ?? 0
+                        const name = bData.name ?? `bundle-${bundle.id}`
+                        console.log(`[AvatarCost] ${id} bundle "${name}" price: ${price}`)
                         total += price
                     }
                     return
                 }
 
-                const r = await fetch(`https://marketplace.roproxy.com/v1/assets/${asset.id}/resale-data`, {
-                    headers: robloxHeaders()
-                })
-                const data = await r.json()
-                if (data.recentAveragePrice && data.recentAveragePrice > 0) {
-                    console.log(`[AvatarCost] ${id} resale RAP: ${data.recentAveragePrice}`)
-                    total += data.recentAveragePrice
+                // Resale data
+                const resaleData = await fetchWithFallback([
+                    `https://marketplace.roproxy.com/v1/assets/${asset.id}/resale-data`,
+                    `https://economy.roblox.com/v1/assets/${asset.id}/resale-data`
+                ], robloxHeaders())
+
+                if (resaleData?.recentAveragePrice > 0) {
+                    console.log(`[AvatarCost] ${id} resale RAP: ${resaleData.recentAveragePrice}`)
+                    total += resaleData.recentAveragePrice
                     return
                 }
 
-                const r2 = await fetch(`https://economy.roproxy.com/v2/assets/${asset.id}/details`, {
-                    headers: robloxHeaders()
-                })
-                const data2 = await r2.json()
-                if (data2.PriceInRobux && data2.PriceInRobux > 0) {
-                    console.log(`[AvatarCost] ${id} economy price: ${data2.PriceInRobux}`)
-                    total += data2.PriceInRobux
+                // Economy details
+                const econData = await fetchWithFallback([
+                    `https://economy.roproxy.com/v2/assets/${asset.id}/details`,
+                    `https://economy.roblox.com/v2/assets/${asset.id}/details`
+                ], robloxHeaders())
+
+                if (econData?.PriceInRobux > 0) {
+                    console.log(`[AvatarCost] ${id} economy price: ${econData.PriceInRobux}`)
+                    total += econData.PriceInRobux
                     return
                 }
 
-                const r3 = await fetch(`https://catalog.roproxy.com/v1/assets/${asset.id}/details`, {
-                    headers: robloxHeaders()
-                })
-                const data3 = await r3.json()
-                if (data3.price && data3.price > 0) {
-                    console.log(`[AvatarCost] ${id} catalog price: ${data3.price}`)
-                    total += data3.price
+                // Catalog details
+                const catalogData = await fetchWithFallback([
+                    `https://catalog.roproxy.com/v1/assets/${asset.id}/details`,
+                    `https://catalog.roblox.com/v1/assets/${asset.id}/details`
+                ], robloxHeaders())
+
+                if (catalogData?.price > 0) {
+                    console.log(`[AvatarCost] ${id} catalog price: ${catalogData.price}`)
+                    total += catalogData.price
                     return
                 }
 
