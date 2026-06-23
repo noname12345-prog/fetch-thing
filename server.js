@@ -112,18 +112,23 @@ app.get("/check/badges/:userId", auth, async (req, res) => {
         let pageCount = 0
 
         do {
-            const url = new URL(`https://badges.roproxy.com/v1/users/${req.params.userId}/badges`)
+            const url = new URL(`https://badges.roblox.com/v1/users/${req.params.userId}/badges`)
             url.searchParams.set("limit", "100")
             url.searchParams.set("sortOrder", "Asc")
             if (cursor) url.searchParams.set("cursor", cursor)
 
-            const r = await fetch(url.toString())
+            const r = await fetch(url.toString(), {
+                headers: {
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json"
+                }
+            })
             const data = await r.json()
 
             console.log(`[Badges] Page ${pageCount + 1} — items: ${(data.data || []).length} nextCursor: ${data.nextPageCursor || "none"}`)
 
             if (!data.data) {
-                console.warn(`[Badges] No data field in response:`, JSON.stringify(data))
+                console.warn(`[Badges] No data field:`, JSON.stringify(data))
                 break
             }
 
