@@ -34,9 +34,11 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
         const avatarRes = await fetch(`https://avatar.roblox.com/v1/users/${req.params.userId}/avatar`)
         const avatarData = await avatarRes.json()
         const assets = avatarData.assets || []
+        console.log(`[AvatarCost] ${req.params.userId} — ${assets.length} assets on avatar`)
         if (!assets.length) return res.json({ robuxSpent: 0 })
 
         const ids = assets.map(a => ({ id: a.id, itemType: "Asset" }))
+        console.log(`[AvatarCost] Sending to catalog:`, JSON.stringify(ids))
 
         const catalogRes = await fetch("https://catalog.roblox.com/v1/catalog/items/details", {
             method: "POST",
@@ -44,19 +46,23 @@ app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
             body: JSON.stringify({ items: ids })
         })
         const catalogData = await catalogRes.json()
+        console.log(`[AvatarCost] Catalog response:`, JSON.stringify(catalogData))
 
         let total = 0
         for (const item of catalogData.data || []) {
-            // check all price fields — limited items have null price but have resale/lowest price
             const price =
                 item.price ??
                 item.lowestPrice ??
                 item.collectibleLowestResalePrice ??
                 0
+            console.log(`[AvatarCost] Item ${item.id} — price:${item.price} lowestPrice:${item.lowestPrice} resale:${item.collectibleLowestResalePrice} → using ${price}`)
             total += price
         }
+
+        console.log(`[AvatarCost] Total for ${req.params.userId}: ${total}`)
         res.json({ robuxSpent: total })
     } catch (e) {
+        console.error(`[AvatarCost] Error:`, e.message)
         res.status(500).json({ error: e.message })
     }
 })
