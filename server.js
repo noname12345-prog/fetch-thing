@@ -222,4 +222,8 @@ app.get("/check/badges/:userId", auth, async (req, res) => {
     }
 })
 
+app.get("/", (req, res) => {
+    res.json({ status: "ok" })
+})
+
 app.listen(8000)
