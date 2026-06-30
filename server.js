@@ -1,234 +1,32 @@
-import express from "express"
-const app = express()
-app.use(express.json())
+const express = require('express');
+const app = express();
 
-const SECRET = process.env.SECRET_KEY
-const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY
+const API_KEY = process.env.API_KEY; // set this in Koyeb's env vars, not in code
 
-function auth(req, res, next) {
-    if (req.headers["x-secret"] !== SECRET) return res.status(403).json({ error: "Forbidden" })
-    next()
-}
+app.get('/thumbnail', async (req, res) => {
+	if (API_KEY && req.headers['x-api-key'] !== API_KEY) {
+		return res.status(401).json({ error: 'unauthorized' });
+	}
 
-function robloxHeaders() {
-    return {
-        "x-api-key": ROBLOX_API_KEY,
-        "Accept": "application/json"
-    }
-}
+	const assetId = req.query.assetId;
+	if (!assetId || !/^\d+$/.test(assetId)) {
+		return res.status(400).json({ error: 'missing or invalid assetId' });
+	}
 
-const KORBLOX_BUNDLE_ID = 94
-const HEADLESS_BUNDLE_ID = 520
-const KORBLOX_PRICE = 17000
-const HEADLESS_PRICE = 31000
+	try {
+		const apiRes = await fetch(
+			`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png`
+		);
+		const data = await apiRes.json();
+		const imageUrl = data?.data?.[0]?.imageUrl || null;
+		res.json({ imageUrl });
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({ error: 'proxy_fetch_failed' });
+	}
+});
 
-async function fetchWithFallback(urlList, headers) {
-    for (const url of urlList) {
-        try {
-            const r = await fetch(url, { headers })
-            if (!r.ok) continue
-            const data = await r.json()
-            return data
-        } catch {
-            continue
-        }
-    }
-    return null
-}
+app.get('/', (req, res) => res.send('ok'));
 
-app.get("/check/inventory/:userId", auth, async (req, res) => {
-    try {
-        const data = await fetchWithFallback([
-            `https://inventory.roproxy.com/v1/users/${req.params.userId}/can-view-inventory`,
-            `https://inventory.roblox.com/v1/users/${req.params.userId}/can-view-inventory`
-        ], robloxHeaders())
-
-        if (!data) {
-            console.warn(`[Inventory] ${req.params.userId}: all requests failed, defaulting canView=true`)
-            return res.json({ canView: true })
-        }
-
-        console.log(`[Inventory] ${req.params.userId}:`, JSON.stringify(data))
-        res.json({ canView: data.canView ?? true })
-    } catch (e) {
-        console.error(`[Inventory] Error:`, e.message)
-        res.json({ canView: true })
-    }
-})
-
-app.get("/check/friends/:userId", auth, async (req, res) => {
-    try {
-        const data = await fetchWithFallback([
-            `https://friends.roproxy.com/v1/users/${req.params.userId}/friends/count`,
-            `https://friends.roblox.com/v1/users/${req.params.userId}/friends/count`
-        ], robloxHeaders())
-
-        if (!data) {
-            console.warn(`[Friends] ${req.params.userId}: all requests failed, defaulting count=0`)
-            return res.json({ count: 0 })
-        }
-
-        console.log(`[Friends] ${req.params.userId}: ${data.count}`)
-        res.json({ count: data.count ?? 0 })
-    } catch (e) {
-        console.error(`[Friends] Error:`, e.message)
-        res.json({ count: 0 })
-    }
-})
-
-app.get("/check/avatar-cost/:userId", auth, async (req, res) => {
-    try {
-        const avatarData = await fetchWithFallback([
-            `https://avatar.roproxy.com/v1/users/${req.params.userId}/avatar`,
-            `https://avatar.roblox.com/v1/users/${req.params.userId}/avatar`
-        ], robloxHeaders())
-
-        if (!avatarData) return res.status(500).json({ error: "Failed to fetch avatar" })
-
-        const assets = avatarData.assets || []
-        if (!assets.length) return res.json({ robuxSpent: 0 })
-
-        const rolimonsRes = await fetch("https://www.rolimons.com/itemapi/itemdetails")
-        const rolimonsData = await rolimonsRes.json()
-        const rolimons = rolimonsData.items || {}
-
-        let total = 0
-        const countedBundles = new Set()
-
-        await Promise.all(assets.map(async (asset) => {
-            const id = String(asset.id)
-            try {
-                if (rolimons[id] && rolimons[id][2] > 0) {
-                    console.log(`[AvatarCost] ${id} Rolimons RAP: ${rolimons[id][2]}`)
-                    total += rolimons[id][2]
-                    return
-                }
-
-                const bundleData = await fetchWithFallback([
-                    `https://catalog.roproxy.com/v1/assets/${asset.id}/bundles`,
-                    `https://catalog.roblox.com/v1/assets/${asset.id}/bundles`
-                ], robloxHeaders())
-
-                if (bundleData?.data?.length > 0) {
-                    for (const bundle of bundleData.data) {
-                        if (countedBundles.has(bundle.id)) continue
-                        countedBundles.add(bundle.id)
-
-                        if (bundle.id === KORBLOX_BUNDLE_ID) {
-                            console.log(`[AvatarCost] ${id} — Korblox detected, adding ${KORBLOX_PRICE}`)
-                            total += KORBLOX_PRICE
-                            continue
-                        }
-                        if (bundle.id === HEADLESS_BUNDLE_ID) {
-                            console.log(`[AvatarCost] ${id} — Headless detected, adding ${HEADLESS_PRICE}`)
-                            total += HEADLESS_PRICE
-                            continue
-                        }
-
-                        const bData = await fetchWithFallback([
-                            `https://catalog.roproxy.com/v1/bundles/${bundle.id}/details`,
-                            `https://catalog.roblox.com/v1/bundles/${bundle.id}/details`
-                        ], robloxHeaders())
-
-                        if (!bData?.product?.priceInRobux) {
-                            console.log(`[AvatarCost] ${id} bundle ${bundle.id} — no price, skipping`)
-                            continue
-                        }
-
-                        const price = bData.product.priceInRobux
-                        const name = bData.name ?? `bundle-${bundle.id}`
-                        console.log(`[AvatarCost] ${id} bundle "${name}" price: ${price}`)
-                        total += price
-                    }
-                    return
-                }
-
-                const resaleData = await fetchWithFallback([
-                    `https://marketplace.roproxy.com/v1/assets/${asset.id}/resale-data`,
-                    `https://economy.roblox.com/v1/assets/${asset.id}/resale-data`
-                ], robloxHeaders())
-
-                if (resaleData?.recentAveragePrice > 0) {
-                    console.log(`[AvatarCost] ${id} resale RAP: ${resaleData.recentAveragePrice}`)
-                    total += resaleData.recentAveragePrice
-                    return
-                }
-
-                const econData = await fetchWithFallback([
-                    `https://economy.roproxy.com/v2/assets/${asset.id}/details`,
-                    `https://economy.roblox.com/v2/assets/${asset.id}/details`
-                ], robloxHeaders())
-
-                if (econData?.PriceInRobux > 0) {
-                    console.log(`[AvatarCost] ${id} economy price: ${econData.PriceInRobux}`)
-                    total += econData.PriceInRobux
-                    return
-                }
-
-                const catalogData = await fetchWithFallback([
-                    `https://catalog.roproxy.com/v1/assets/${asset.id}/details`,
-                    `https://catalog.roblox.com/v1/assets/${asset.id}/details`
-                ], robloxHeaders())
-
-                if (catalogData?.price > 0) {
-                    console.log(`[AvatarCost] ${id} catalog price: ${catalogData.price}`)
-                    total += catalogData.price
-                    return
-                }
-
-                console.log(`[AvatarCost] ${id} — no price found`)
-            } catch (e) {
-                console.warn(`[AvatarCost] ${id} error:`, e.message)
-            }
-        }))
-
-        console.log(`[AvatarCost] Total for ${req.params.userId}: ${total}`)
-        res.json({ robuxSpent: total })
-    } catch (e) {
-        console.error(`[AvatarCost] Error:`, e.message)
-        res.status(500).json({ error: e.message })
-    }
-})
-
-app.get("/check/badges/:userId", auth, async (req, res) => {
-    try {
-        const pages = []
-        let cursor = null
-        let pageCount = 0
-
-        do {
-            const url = new URL(`https://apis.roblox.com/cloud/v2/users/${req.params.userId}/inventory-items`)
-            url.searchParams.set("filter", "badges=true")
-            url.searchParams.set("maxPageSize", "25")
-            if (cursor) url.searchParams.set("pageToken", cursor)
-
-            const r = await fetch(url.toString(), {
-                headers: robloxHeaders()
-            })
-            const data = await r.json()
-
-            console.log(`[Badges] Page ${pageCount + 1} — items: ${(data.inventoryItems || []).length} next: ${data.nextPageToken || "none"}`)
-
-            if (!data.inventoryItems) {
-                console.warn(`[Badges] Unexpected response:`, JSON.stringify(data))
-                break
-            }
-
-            pages.push(data.inventoryItems)
-            pageCount++
-            cursor = data.nextPageToken || null
-        } while (cursor && pageCount < 200)
-
-        console.log(`[Badges] Total pages for ${req.params.userId}: ${pageCount}`)
-        res.json({ pages })
-    } catch (e) {
-        console.error(`[Badges] Error:`, e.message)
-        res.status(500).json({ error: e.message })
-    }
-})
-
-app.get("/", (req, res) => {
-    res.json({ status: "ok" })
-})
-
-app.listen(8000)
+const port = process.env.PORT || 8000;
+app.listen(port, () => console.log(`listening on ${port}`));
